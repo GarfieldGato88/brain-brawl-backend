@@ -1,0 +1,285 @@
+const io = require('socket.io-client');
+const readline = require('readline');
+
+// Create readline interface for user input
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+let socket;
+let currentRoom = null;
+let isHost = false;
+let currentQuestion = null;
+
+// Test JWT token (you'll need to get this from a real login)
+const TEST_TOKEN = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiVGVzdFBsYXllcjEiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJpYXQiOjE3MzQzNjcxMjMsImV4cCI6MTczNDQ1MzUyM30.abc123def456...'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoidGVzdHBsYXllciIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsImlhdCI6MTczNDM2MzY4NCwiZXhwIjoxNzM0NDUwMDg0fQ.example'; // This is just a placeholder
+
+console.log('🎮 Brain Brawl Socket.io Test Client');
+console.log('=====================================\n');
+
+function connectToServer() {
+  console.log('🔌 Connecting to server...');
+  
+  socket = io('http://localhost:5000', {
+    auth: {
+      token: TEST_TOKEN
+    },
+    transports: ['websocket', 'polling']
+  });
+
+  // Connection events
+  socket.on('connect', () => {
+    console.log('✅ Connected to server!');
+    console.log('Socket ID:', socket.id);
+    showMenu();
+  });
+
+  socket.on('connect_error', (error) => {
+    console.error('❌ Connection failed:', error.message);
+    console.log('💡 Make sure your server is running with: npm run dev');
+    console.log('💡 You might need a valid JWT token for authentication');
+    process.exit(1);
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log('👋 Disconnected from server:', reason);
+  });
+
+  // Room events
+  socket.on('room_created', (data) => {
+    console.log('\n🏠 Room created successfully!');
+    console.log('📋 Room Code:', data.code);
+    console.log('👑 You are the host');
+    console.log('👥 Players:', data.players.length);
+    
+    currentRoom = data.code;
+    isHost = data.isHost;
+    showRoomMenu();
+  });
+
+  socket.on('room_joined', (data) => {
+    console.log('\n🚪 Joined room successfully!');
+    console.log('📋 Room Code:', data.code);
+    console.log('👑 Host:', data.isHost ? 'You' : 'Someone else');
+    console.log('👥 Players:', data.players.length);
+    
+    currentRoom = data.code;
+    isHost = data.isHost;
+    showRoomMenu();
+  });
+
+  socket.on('player_joined', (data) => {
+    console.log('\n👤 New player joined!');
+    console.log('Player:', data.player.username);
+    console.log('👥 Total players:', data.players.length);
+  });
+
+  socket.on('player_left', (data) => {
+    console.log('\n👋 Player left');
+    console.log('Player ID:', data.playerId);
+    console.log('👥 Remaining players:', data.players.length);
+  });
+
+  // Game events
+  socket.on('game_started', (data) => {
+    console.log('\n🚀 Game started!');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    displayQuestion(data);
+    currentQuestion = data;
+  });
+
+  socket.on('next_question', (data) => {
+    console.log('\n➡️ Next question!');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    displayQuestion(data);
+    currentQuestion = data;
+  });
+
+  socket.on('answer_result', (data) => {
+    console.log('\n📊 Answer Result:');
+    console.log('✅ Correct:', data.isCorrect ? 'YES' : 'NO');
+    console.log('🏆 Points earned:', data.points);
+    console.log('📈 Your total score:', data.yourScore);
+    console.log('💬 Comment:', data.snarkComment);
+    console.log('🎯 Correct answer was:', data.correctAnswer);
+    
+    if (isHost) {
+      console.log('\n⏱️ Press Enter to continue to next question...');
+    }
+  });
+
+  socket.on('game_finished', (data) => {
+    console.log('\n🏁 Game finished!');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🏆 Final Leaderboard:');
+    data.leaderboard.forEach((player, index) => {
+      const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '🏃';
+      console.log(`${medal} ${index + 1}. ${player.username}: ${player.score} points (${player.correctAnswers}/${player.totalAnswers} correct)`);
+    });
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    currentRoom = null;
+    isHost = false;
+    currentQuestion = null;
+    showMenu();
+  });
+
+  // Error events
+  socket.on('error', (data) => {
+    console.error('\n❌ Error:', data.message);
+    if (currentRoom) {
+      showRoomMenu();
+    } else {
+      showMenu();
+    }
+  });
+}
+
+function displayQuestion(data) {
+  console.log(`❓ Question ${data.questionNumber}/${data.totalQuestions}`);
+  console.log(`📚 Category: ${data.category}`);
+  console.log(`⏰ Time limit: ${data.timeLimit / 1000} seconds`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`Q: ${data.question}`);
+  console.log('');
+  console.log('A) ' + data.options[0]);
+  console.log('B) ' + data.options[1]);
+  console.log('C) ' + data.options[2]);
+  console.log('D) ' + data.options[3]);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('Type A, B, C, or D to answer:');
+}
+
+function showMenu() {
+  console.log('\n📋 Main Menu:');
+  console.log('1. Create Room');
+  console.log('2. Join Room');
+  console.log('3. Get Room Info');
+  console.log('4. Exit');
+  console.log('\nChoose an option (1-4):');
+}
+
+function showRoomMenu() {
+  console.log('\n🏠 Room Menu:');
+  console.log('📋 Room Code:', currentRoom);
+  console.log('👑 Host:', isHost ? 'You' : 'Someone else');
+  
+  if (isHost) {
+    console.log('1. Start Game');
+    console.log('2. Leave Room');
+    console.log('3. Get Room Info');
+    console.log('\nChoose an option (1-3):');
+  } else {
+    console.log('1. Leave Room');
+    console.log('2. Get Room Info');
+    console.log('\nChoose an option (1-2) or wait for host to start:');
+  }
+}
+
+function handleInput(input) {
+  const choice = input.trim();
+  
+  // Handle answers during game
+  if (currentQuestion && ['A', 'B', 'C', 'D'].includes(choice.toUpperCase())) {
+    const timeSpent = Math.floor(Math.random() * 10000) + 1000; // Random time 1-11 seconds
+    console.log(`📝 Submitting answer: ${choice.toUpperCase()}`);
+    socket.emit('submit_answer', { 
+      answer: choice.toUpperCase(), 
+      timeSpent: timeSpent 
+    });
+    return;
+  }
+  
+  // Handle next question (host only)
+  if (currentQuestion && choice === '' && isHost) {
+    console.log('⏭️ Moving to next question...');
+    socket.emit('next_question');
+    return;
+  }
+  
+  // Handle room menu
+  if (currentRoom) {
+    if (isHost) {
+      switch (choice) {
+        case '1':
+          console.log('🚀 Starting game...');
+          socket.emit('start_game');
+          break;
+        case '2':
+          console.log('🚪 Leaving room...');
+          socket.emit('leave_room');
+          currentRoom = null;
+          isHost = false;
+          showMenu();
+          break;
+        case '3':
+          console.log('📊 Getting room info...');
+          socket.emit('get_room_info');
+          break;
+        default:
+          console.log('❌ Invalid choice');
+          showRoomMenu();
+      }
+    } else {
+      switch (choice) {
+        case '1':
+          console.log('🚪 Leaving room...');
+          socket.emit('leave_room');
+          currentRoom = null;
+          isHost = false;
+          showMenu();
+          break;
+        case '2':
+          console.log('📊 Getting room info...');
+          socket.emit('get_room_info');
+          break;
+        default:
+          console.log('❌ Invalid choice');
+          showRoomMenu();
+      }
+    }
+    return;
+  }
+  
+  // Handle main menu
+  switch (choice) {
+    case '1':
+      console.log('🏠 Creating room...');
+      socket.emit('create_room');
+      break;
+    case '2':
+      console.log('Enter room code (6 digits):');
+      rl.question('Room code: ', (code) => {
+        console.log(`🚪 Joining room ${code}...`);
+        socket.emit('join_room', { code: code });
+      });
+      break;
+    case '3':
+      console.log('📊 Getting room info...');
+      socket.emit('get_room_info');
+      break;
+    case '4':
+      console.log('👋 Goodbye!');
+      process.exit(0);
+      break;
+    default:
+      console.log('❌ Invalid choice');
+      showMenu();
+  }
+}
+
+// Handle user input
+rl.on('line', handleInput);
+
+// Handle Ctrl+C
+process.on('SIGINT', () => {
+  console.log('\n👋 Disconnecting...');
+  if (socket) {
+    socket.disconnect();
+  }
+  process.exit(0);
+});
+
+// Start the client
+connectToServer();

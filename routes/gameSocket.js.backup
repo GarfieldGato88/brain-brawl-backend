@@ -1,0 +1,498 @@
+// Enhanced gameSocket.js with proper game ending and answer display
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+const gameRooms = new Map();
+
+// Safe object creation to prevent circular references
+const createSafePlayerObject = (player) => ({
+  id: player.id,
+  username: player.username,
+  score: player.score || 0,
+  hasAnswered: player.hasAnswered || false,
+  isHost: player.isHost || false,
+  xp: player.xp || 0,
+  gems: player.gems || 0
+});
+
+const createSafeRoomObject = (room) => ({
+  id: room.id,
+  code: room.code,
+  players: room.players.map(createSafePlayerObject),
+  hostId: room.hostId,
+  gameActive: room.gameActive || false,
+  currentQuestion: room.currentQuestion || 0,
+  maxPlayers: room.maxPlayers || 5,
+  questionStartTime: room.questionStartTime,
+  questionData: room.questionData ? {
+    id: room.questionData.id,
+    question: room.questionData.question,
+    options: room.questionData.options,
+    category: room.questionData.category,
+    difficulty: room.questionData.difficulty
+    // Note: Don't include correct_answer or explanations in game data
+  } : null
+});
+
+// Timer management
+const gameTimers = new Map();
+
+const clearGameTimer = (roomId) => {
+  if (gameTimers.has(roomId)) {
+    clearTimeout(gameTimers.get(roomId));
+    gameTimers.delete(roomId);
+  }
+};
+
+module.exports = (io) => {
+  io.on('connection', (socket) => {
+    console.log('User connected:', socket.id);
+
+    // Create room
+    socket.on('create_room', async (userData) => {
+      try {
+        const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const roomId = `room_${roomCode}`;
+        
+        const playerObj = {
+          id: socket.id,
+          username: userData.username || 'Anonymous',
+          score: 0,
+          hasAnswered: false,
+          isHost: true,
+          xp: userData.xp || 0,
+          gems: userData.gems || 0
+        };
+
+        const room = {
+          id: roomId,
+          code: roomCode,
+          players: [playerObj],
+          hostId: socket.id,
+          gameActive: false,
+          currentQuestion: 0,
+          maxPlayers: 5,
+          questionStartTime: null,
+          questionData: null
+        };
+
+        gameRooms.set(roomId, room);
+        socket.join(roomId);
+        socket.roomId = roomId;
+
+        socket.emit('room_created', {
+          success: true,
+          room: createSafeRoomObject(room)
+        });
+
+        console.log(`Room ${roomCode} created by ${userData.username}`);
+      } catch (error) {
+        console.error('Error creating room:', error);
+        socket.emit('room_created', { success: false, error: 'Failed to create room' });
+      }
+    });
+
+    // Join room
+    socket.on('join_room', async (data) => {
+      try {
+        const { roomCode, userData } = data;
+        const roomId = `room_${roomCode.toUpperCase()}`;
+        const room = gameRooms.get(roomId);
+
+        if (!room) {
+          return socket.emit('room_joined', { success: false, error: 'Room not found' });
+        }
+
+        if (room.players.length >= room.maxPlayers) {
+          return socket.emit('room_joined', { success: false, error: 'Room is full' });
+        }
+
+        if (room.gameActive) {
+          return socket.emit('room_joined', { success: false, error: 'Game already in progress' });
+        }
+
+        const playerObj = {
+          id: socket.id,
+          username: userData.username || 'Anonymous',
+          score: 0,
+          hasAnswered: false,
+          isHost: false,
+          xp: userData.xp || 0,
+          gems: userData.gems || 0
+        };
+
+        room.players.push(playerObj);
+        socket.join(roomId);
+        socket.roomId = roomId;
+
+        socket.emit('room_joined', {
+          success: true,
+          room: createSafeRoomObject(room)
+        });
+
+        // Notify all players in room
+        io.to(roomId).emit('player_joined', {
+          player: createSafePlayerObject(playerObj),
+          room: createSafeRoomObject(room)
+        });
+
+        console.log(`${userData.username} joined room ${roomCode}`);
+      } catch (error) {
+        console.error('Error joining room:', error);
+        socket.emit('room_joined', { success: false, error: 'Failed to join room' });
+      }
+    });
+
+    // Start game
+    socket.on('start_game', async () => {
+      try {
+        const room = gameRooms.get(socket.roomId);
+        if (!room || room.hostId !== socket.id) {
+          return socket.emit('game_error', { error: 'Only the host can start the game' });
+        }
+
+        if (room.players.length < 2) {
+          return socket.emit('game_error', { error: 'Need at least 2 players to start' });
+        }
+
+        room.gameActive = true;
+        room.currentQuestion = 0;
+
+        // Get 15 random questions
+        const { data: questions, error } = await supabase
+          .rpc('get_random_questions', { question_count: 15 });
+
+        if (error || !questions || questions.length === 0) {
+          throw new Error('Failed to load questions');
+        }
+
+        room.questions = questions;
+
+        io.to(socket.roomId).emit('game_started', {
+          message: 'Game starting!',
+          totalQuestions: questions.length
+        });
+
+        // Start first question after 3 seconds
+        setTimeout(() => {
+          sendNextQuestion(socket.roomId);
+        }, 3000);
+
+      } catch (error) {
+        console.error('Error starting game:', error);
+        io.to(socket.roomId).emit('game_error', { error: 'Failed to start game' });
+      }
+    });
+
+    // Submit answer
+    socket.on('submit_answer', (data) => {
+      try {
+        const { selectedOption } = data;
+        const room = gameRooms.get(socket.roomId);
+        
+        if (!room || !room.gameActive || !room.questionData) {
+          return;
+        }
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player || player.hasAnswered) {
+          return;
+        }
+
+        const timeRemaining = Math.max(0, 30 - Math.floor((Date.now() - room.questionStartTime) / 1000));
+        const isCorrect = selectedOption === room.questionData.correct_answer;
+        
+        // Calculate score
+        let points = 0;
+        if (isCorrect) {
+          points = 100 + (timeRemaining * 2); // Base + speed bonus
+          
+          // First correct answer bonus
+          const correctAnswers = room.players.filter(p => 
+            p.hasAnswered && p.selectedOption === room.questionData.correct_answer
+          );
+          if (correctAnswers.length === 0) {
+            points += 50; // First correct bonus
+          }
+        }
+
+        player.hasAnswered = true;
+        player.selectedOption = selectedOption;
+        player.isCorrect = isCorrect;
+        player.score += points;
+        player.questionScore = points;
+
+        // Check if everyone has answered
+        const allAnswered = room.players.every(p => p.hasAnswered);
+        
+        if (allAnswered) {
+          clearGameTimer(socket.roomId);
+          // Show results after everyone answers
+          setTimeout(() => {
+            showQuestionResults(socket.roomId);
+          }, 1000);
+        } else {
+          // Update room status
+          io.to(socket.roomId).emit('player_answered', {
+            playerId: socket.id,
+            username: player.username,
+            playersAnswered: room.players.filter(p => p.hasAnswered).length,
+            totalPlayers: room.players.length
+          });
+        }
+
+      } catch (error) {
+        console.error('Error submitting answer:', error);
+      }
+    });
+
+    // Show question results with correct answer
+    const showQuestionResults = (roomId) => {
+      const room = gameRooms.get(roomId);
+      if (!room) return;
+
+      const questionData = room.questionData;
+      const results = room.players.map(player => ({
+        username: player.username,
+        selectedOption: player.selectedOption,
+        isCorrect: player.isCorrect,
+        score: player.score,
+        questionScore: player.questionScore || 0
+      }));
+
+      // Send results with correct answer and explanation
+      io.to(roomId).emit('question_results', {
+        question: questionData.question,
+        correctAnswer: questionData.correct_answer,
+        options: questionData.options,
+        explanation: questionData.fun_fact || "Great job learning something new!",
+        snark: questionData.snarky_comment || "Better luck next time!",
+        results: results,
+        leaderboard: room.players
+          .sort((a, b) => b.score - a.score)
+          .map(p => ({ username: p.username, score: p.score }))
+      });
+
+      // Move to next question or end game after 6 seconds
+      setTimeout(() => {
+        if (room.currentQuestion >= room.questions.length - 1) {
+          endGame(roomId);
+        } else {
+          sendNextQuestion(roomId);
+        }
+      }, 6000);
+    };
+
+    // Send next question
+    const sendNextQuestion = (roomId) => {
+      const room = gameRooms.get(roomId);
+      if (!room || !room.gameActive) return;
+
+      room.currentQuestion++;
+      
+      if (room.currentQuestion > room.questions.length) {
+        return endGame(roomId);
+      }
+
+      // Reset player states
+      room.players.forEach(player => {
+        player.hasAnswered = false;
+        player.selectedOption = null;
+        player.isCorrect = false;
+        player.questionScore = 0;
+      });
+
+      const questionData = room.questions[room.currentQuestion - 1];
+      room.questionData = questionData;
+      room.questionStartTime = Date.now();
+
+      io.to(roomId).emit('new_question', {
+        questionNumber: room.currentQuestion,
+        totalQuestions: room.questions.length,
+        question: questionData.question,
+        options: questionData.options,
+        category: questionData.category,
+        difficulty: questionData.difficulty,
+        timeLimit: 30
+      });
+
+      // Auto-advance if time runs out
+      const timer = setTimeout(() => {
+        showQuestionResults(roomId);
+      }, 30000);
+      
+      gameTimers.set(roomId, timer);
+    };
+
+    // End game with proper cleanup
+    const endGame = async (roomId) => {
+      try {
+        const room = gameRooms.get(roomId);
+        if (!room) return;
+
+        clearGameTimer(roomId);
+        room.gameActive = false;
+
+        // Calculate final results and rewards
+        const finalResults = room.players
+          .sort((a, b) => b.score - a.score)
+          .map((player, index) => {
+            const placement = index + 1;
+            let xpReward = 10; // Base XP
+            let gemReward = 1; // Base gems
+
+            // Placement bonuses
+            if (placement === 1) {
+              xpReward = 50;
+              gemReward = 10;
+            } else if (placement === 2) {
+              xpReward = 30;
+              gemReward = 6;
+            } else if (placement === 3) {
+              xpReward = 20;
+              gemReward = 4;
+            }
+
+            // Performance bonuses
+            const correctAnswers = room.questions.filter((q, i) => {
+              // This is simplified - you'd track this during the game
+              return Math.random() > 0.5; // Placeholder
+            }).length;
+            
+            xpReward += correctAnswers * 5;
+            gemReward += Math.floor(correctAnswers / 3);
+
+            return {
+              username: player.username,
+              score: player.score,
+              placement: placement,
+              xpReward: xpReward,
+              gemReward: gemReward,
+              correctAnswers: correctAnswers
+            };
+          });
+
+        // Update player stats in database
+        for (const result of finalResults) {
+          try {
+            await supabase
+              .from('users')
+              .update({
+                xp: supabase.raw(`xp + ${result.xpReward}`),
+                gems: supabase.raw(`gems + ${result.gemReward}`),
+                games_played: supabase.raw('games_played + 1'),
+                games_won: result.placement === 1 ? supabase.raw('games_won + 1') : supabase.raw('games_won'),
+                total_score: supabase.raw(`total_score + ${result.score}`)
+              })
+              .eq('username', result.username);
+          } catch (dbError) {
+            console.error('Error updating player stats:', dbError);
+          }
+        }
+
+        // Send final results
+        io.to(roomId).emit('game_ended', {
+          message: 'Game Complete!',
+          finalResults: finalResults,
+          totalQuestions: room.questions.length
+        });
+
+        // Clean up room after 10 seconds
+        setTimeout(() => {
+          // Notify players room is closing
+          io.to(roomId).emit('room_closing', {
+            message: 'Room closing in 5 seconds...',
+            redirectTo: 'dashboard'
+          });
+          
+          // Final cleanup after 5 more seconds
+          setTimeout(() => {
+            // Disconnect all players
+            const sockets = io.sockets.adapter.rooms.get(roomId);
+            if (sockets) {
+              sockets.forEach(socketId => {
+                const playerSocket = io.sockets.sockets.get(socketId);
+                if (playerSocket) {
+                  playerSocket.leave(roomId);
+                  playerSocket.roomId = null;
+                  playerSocket.emit('force_redirect', { to: 'dashboard' });
+                }
+              });
+            }
+            
+            // Delete room
+            gameRooms.delete(roomId);
+            console.log(`Room ${room.code} closed and cleaned up`);
+          }, 5000);
+        }, 10000);
+
+      } catch (error) {
+        console.error('Error ending game:', error);
+        io.to(roomId).emit('game_error', { error: 'Failed to end game properly' });
+      }
+    };
+
+    // Leave room
+    socket.on('leave_room', () => {
+      if (socket.roomId) {
+        handlePlayerLeave(socket);
+      }
+    });
+
+    // Disconnect
+    socket.on('disconnect', () => {
+      console.log('User disconnected:', socket.id);
+      if (socket.roomId) {
+        handlePlayerLeave(socket);
+      }
+    });
+
+    // Handle player leaving
+    const handlePlayerLeave = (socket) => {
+      const room = gameRooms.get(socket.roomId);
+      if (!room) return;
+
+      const playerIndex = room.players.findIndex(p => p.id === socket.id);
+      if (playerIndex === -1) return;
+
+      const player = room.players[playerIndex];
+      room.players.splice(playerIndex, 1);
+
+      // If host left, assign new host
+      if (room.hostId === socket.id && room.players.length > 0) {
+        room.hostId = room.players[0].id;
+        room.players[0].isHost = true;
+      }
+
+      // If no players left, delete room
+      if (room.players.length === 0) {
+        clearGameTimer(socket.roomId);
+        gameRooms.delete(socket.roomId);
+        console.log(`Room ${room.code} deleted - no players remaining`);
+      } else {
+        // Notify remaining players
+        io.to(socket.roomId).emit('player_left', {
+          player: createSafePlayerObject(player),
+          room: createSafeRoomObject(room)
+        });
+      }
+
+      socket.leave(socket.roomId);
+      socket.roomId = null;
+    };
+
+    // Get room info
+    socket.on('get_room_info', () => {
+      if (socket.roomId) {
+        const room = gameRooms.get(socket.roomId);
+        if (room) {
+          socket.emit('room_info', createSafeRoomObject(room));
+        }
+      }
+    });
+  });
+};

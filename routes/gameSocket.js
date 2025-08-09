@@ -1,4 +1,4 @@
-// Complete gameSocket.js - Fixed user switching bug
+// Complete gameSocket.js - Fixed user switching bug AND correct answer format
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
@@ -99,23 +99,26 @@ const convertOptionsToObject = (questionData) => {
   return options;
 };
 
-// Convert correct answer to proper format
+// 🔧 FIXED: Convert correct answer to proper format (handles integer database format)
 const convertCorrectAnswer = (questionData) => {
   let correctAnswer = questionData.correct_answer;
   
   console.log('Original correct_answer:', correctAnswer, 'Type:', typeof correctAnswer);
   
+  // Handle string format like "option_a"
   if (correctAnswer && typeof correctAnswer === 'string' && correctAnswer.startsWith('option_')) {
     correctAnswer = correctAnswer.replace('option_', '');
     console.log('Converted from option_ format to:', correctAnswer);
   }
   
+  // 🔧 MAIN FIX: Handle integer format (0,1,2,3) -> (a,b,c,d)
   if (typeof correctAnswer === 'number') {
     const letters = ['a', 'b', 'c', 'd'];
     correctAnswer = letters[correctAnswer] || 'a';
     console.log('Converted from number to letter:', correctAnswer);
   }
   
+  // Validate and default
   if (!correctAnswer || !['a', 'b', 'c', 'd'].includes(correctAnswer.toLowerCase())) {
     console.warn('Invalid correct answer format:', questionData.correct_answer, 'defaulting to "a"');
     correctAnswer = 'a';
@@ -229,7 +232,7 @@ module.exports = (io) => {
       }
     });
 
-    // Start game
+    // 🔧 FIXED: Start game with direct question fetching (not using RPC function)
     socket.on('start_game', async () => {
       try {
         const room = gameRooms.get(socket.roomId);
@@ -244,15 +247,32 @@ module.exports = (io) => {
         room.gameActive = true;
         room.currentQuestion = 0;
 
+        // 🔧 FIXED: Direct database query instead of RPC function
+        console.log('🎯 Fetching questions from database...');
         const { data: questions, error } = await supabase
-          .rpc('get_random_questions', { question_count: 15 });
+          .from('questions')
+          .select('*')
+          .order('RANDOM()')
+          .limit(15);
 
-        if (error || !questions || questions.length === 0) {
-          throw new Error('Failed to load questions');
+        if (error) {
+          console.error('❌ Database error:', error);
+          throw new Error(`Database error: ${error.message}`);
+        }
+
+        if (!questions || questions.length === 0) {
+          console.error('❌ No questions found in database');
+          throw new Error('No questions found in database');
         }
 
         room.questions = questions;
-        console.log(`Loaded ${questions.length} questions for room ${room.code}`);
+        console.log(`✅ Loaded ${questions.length} questions for room ${room.code}`);
+        console.log('Sample question:', {
+          id: questions[0].id,
+          question: questions[0].question,
+          correct_answer: questions[0].correct_answer,
+          options_type: typeof questions[0].options
+        });
 
         io.to(socket.roomId).emit('game_started', {
           message: 'Game starting!',
@@ -264,7 +284,7 @@ module.exports = (io) => {
         }, 3000);
 
       } catch (error) {
-        console.error('Error starting game:', error);
+        console.error('❌ Error starting game:', error);
         io.to(socket.roomId).emit('game_error', { error: 'Failed to start game' });
       }
     });

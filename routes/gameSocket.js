@@ -247,52 +247,42 @@ module.exports = (io) => {
         room.gameActive = true;
         room.currentQuestion = 0;
 
-        // 🔧 FIXED: Fetch random questions (Supabase-compatible approach)
-        console.log('🎯 Fetching questions from database...');
-        
-        // First get total count
-        const { count, error: countError } = await supabase
-          .from('questions')
-          .select('*', { count: 'exact', head: true });
+        // 🔧 SIMPLE RANDOM: Fetch more questions and shuffle in JavaScript
+        console.log('🎯 Fetching random questions from database...');
 
-        if (countError) {
-          console.error('❌ Error getting question count:', countError);
-          throw new Error(`Count error: ${countError.message}`);
-        }
-
-        console.log(`📊 Total questions available: ${count}`);
-
-        // Generate random offset
-        const randomOffset = Math.floor(Math.random() * Math.max(0, count - 15));
-        
-        // Fetch questions with random offset
-        const { data: questions, error } = await supabase
+        // Fetch more questions than needed and shuffle
+        const { data: allQuestions, error } = await supabase
           .from('questions')
           .select('*')
-          .range(randomOffset, randomOffset + 14);
+          .limit(50); // Get 50 questions and pick 15 randomly
 
         if (error) {
           console.error('❌ Database error:', error);
           throw new Error(`Database error: ${error.message}`);
         }
 
-        if (!questions || questions.length === 0) {
+        if (!allQuestions || allQuestions.length === 0) {
           console.error('❌ No questions found in database');
           throw new Error('No questions found in database');
         }
 
-        room.questions = questions;
-        console.log(`✅ Loaded ${questions.length} questions for room ${room.code}`);
+        // Shuffle and pick 15 random questions
+        const shuffledQuestions = allQuestions
+          .sort(() => Math.random() - 0.5)  // Shuffle
+          .slice(0, 15);  // Take first 15
+
+        room.questions = shuffledQuestions;
+        console.log(`✅ Loaded ${shuffledQuestions.length} random questions for room ${room.code}`);
         console.log('Sample question:', {
-          id: questions[0].id,
-          question: questions[0].question,
-          correct_answer: questions[0].correct_answer,
-          options_type: typeof questions[0].options
+          id: shuffledQuestions[0].id,
+          question: shuffledQuestions[0].question,
+          correct_answer: shuffledQuestions[0].correct_answer,
+          options_type: typeof shuffledQuestions[0].options
         });
 
         io.to(socket.roomId).emit('game_started', {
           message: 'Game starting!',
-          totalQuestions: questions.length
+          totalQuestions: shuffledQuestions.length
         });
 
         setTimeout(() => {

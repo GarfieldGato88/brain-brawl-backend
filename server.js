@@ -67,13 +67,15 @@ const corsOptions = {
 
 app.use(cors({
   origin: [
-    'http://localhost:3000',  // Local development
-    'https://brain-brawl-frontend-xyz.vercel.app',  // https://brain-brawl-six.vercel.app/
-    /\.vercel\.app$/  // Allow any Vercel subdomain
+    'http://localhost:3000',                    // Local development
+    'https://brain-brawl-six.vercel.app',       // brain-brawl-six.vercel.app
+    /\.vercel\.app$/,                           // Allow any Vercel subdomain
+    /\.vercel\.com$/                            // Allow Vercel preview URLs
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  optionsSuccessStatus: 200
 }));
 
 // Socket.io setup with CORS

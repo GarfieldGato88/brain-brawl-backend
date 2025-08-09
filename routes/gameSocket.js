@@ -247,13 +247,29 @@ module.exports = (io) => {
         room.gameActive = true;
         room.currentQuestion = 0;
 
-        // 🔧 FIXED: Direct database query instead of RPC function
+        // 🔧 FIXED: Fetch random questions (Supabase-compatible approach)
         console.log('🎯 Fetching questions from database...');
+        
+        // First get total count
+        const { count, error: countError } = await supabase
+          .from('questions')
+          .select('*', { count: 'exact', head: true });
+
+        if (countError) {
+          console.error('❌ Error getting question count:', countError);
+          throw new Error(`Count error: ${countError.message}`);
+        }
+
+        console.log(`📊 Total questions available: ${count}`);
+
+        // Generate random offset
+        const randomOffset = Math.floor(Math.random() * Math.max(0, count - 15));
+        
+        // Fetch questions with random offset
         const { data: questions, error } = await supabase
           .from('questions')
           .select('*')
-          .order('RANDOM()')
-          .limit(15);
+          .range(randomOffset, randomOffset + 14);
 
         if (error) {
           console.error('❌ Database error:', error);

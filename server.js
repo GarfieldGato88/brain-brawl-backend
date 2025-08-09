@@ -49,6 +49,59 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// Add this to your server.js file
+const express = require('express');
+const cors = require('cors');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const handleGameSocket = require('./routes/gameSocket'); // Updated import
+
+const app = express();
+const server = createServer(app);
+
+// CORS configuration
+const corsOptions = {
+  origin: "http://localhost:3000", // Your React app
+  credentials: true
+};
+
+app.use(cors({
+  origin: [
+    'http://localhost:3000',  // Local development
+    'https://brain-brawl-frontend-xyz.vercel.app',  // https://brain-brawl-six.vercel.app/
+    /\.vercel\.app$/  // Allow any Vercel subdomain
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Socket.io setup with CORS
+const io = new Server(server, {
+  cors: corsOptions
+});
+
+// Initialize game socket handlers
+handleGameSocket(io);
+
+// Your existing middleware and routes
+app.use(express.json());
+app.use('/api/auth', require('./routes/auth'));
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({ message: 'Brain Brawl Backend is running!' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date() });
+});
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`🚀 Brain Brawl server running on port ${PORT}`);
+});
+
 // Test database connection
 supabase
   .from('users')

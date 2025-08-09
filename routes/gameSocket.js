@@ -254,7 +254,7 @@ module.exports = (io) => {
         const { data: allQuestions, error } = await supabase
           .from('questions')
           .select('*')
-          .limit(50); // Get 50 questions and pick 15 randomly
+          .limit(500); // Get 500 questions and pick 15 randomly
 
         if (error) {
           console.error('❌ Database error:', error);

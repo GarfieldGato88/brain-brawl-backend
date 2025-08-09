@@ -11,12 +11,13 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 const server = http.createServer(app);
 
-// 🔧 FIXED: CORS configuration to allow Vercel
+// 🔧 FIXED: CORS configuration to allow your specific Vercel URL
 const corsOptions = {
   origin: [
     'http://localhost:3000', 
     'http://127.0.0.1:3000',
-    'https://brain-brawl-six.vercel.app',  // Add your actual Vercel URL
+    'https://brain-brawl-six.vercel.app',  // Production URL
+    'https://brain-brawl-git-master-davids-projects-49de8ad6.vercel.app',  // Git URL
     /\.vercel\.app$/  // Allow any Vercel subdomain
   ],
   credentials: true,
